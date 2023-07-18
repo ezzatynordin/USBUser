@@ -13,21 +13,27 @@ namespace UsbDeviceAccess
 
         // Constants for DIF_PROPERTYCHANGE and DICS_PROPCHANGE
         private const uint DIF_PROPERTYCHANGE = 0x00000012;
+        private const uint DICS_PROPCHANGE = 0x00000003;
 
-        // P/Invoke declaration for UpdateDriverForPlugAndPlayDevices function
+        // P/Invoke declaration for UpdateDriverForPlugAndPlayDevices function with CM_LIVE_DEVICE flag
         [DllImport("newdev.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         static extern bool UpdateDriverForPlugAndPlayDevices(IntPtr hwndParent, string deviceInstancePath, string fullInfPath, uint installFlags, out bool bRebootRequired);
 
         static void Main(string[] args)
         {
+            // Start the USB detection and access control logic
             StartUsbDetection();
             RegisterUsbEventWatcher(); // Add this line to register the USB event watcher
+
+            // Register for registry change events to automatically update Device Manager
+            RegisterRegistryChangeEvents();
 
             // Keep the console application running to detect USB device events
             Console.WriteLine("Press any key to exit.");
             Console.ReadKey();
         }
 
+        // Method to start USB device detection and access control
         public static void StartUsbDetection()
         {
             // Implement USB device detection and get the device ID
@@ -54,6 +60,7 @@ namespace UsbDeviceAccess
             }
         }
 
+        // Method to get the USB device ID
         public static string GetUsbDeviceId()
         {
             string deviceId = null;
@@ -62,7 +69,6 @@ namespace UsbDeviceAccess
             {
                 // Implement USB device detection and retrieval here
                 // For example, you can use ManagementObjectSearcher to query Win32_PnPEntity class to get USB device IDs
-
                 ManagementObjectSearcher searcher = new ManagementObjectSearcher("root\\CIMV2", "SELECT * FROM Win32_PnPEntity");
 
                 foreach (ManagementObject queryObj in searcher.Get())
@@ -85,7 +91,7 @@ namespace UsbDeviceAccess
             return deviceId;
         }
 
-
+        // Method to check if the USB device is authorized in the database
         public static bool CheckDeviceInDatabase(string deviceId)
         {
             using (SqlConnection connection = new SqlConnection(ConnectionString))
@@ -113,17 +119,14 @@ namespace UsbDeviceAccess
             }
         }
 
+        // Method to enable USB storage devices
         public static void EnableUsbStorageDevices()
         {
             try
             {
-                // Restore the original value of the registry key to enable USB storage devices
+                // Set the registry key value to enable USB storage devices (set to 3)
                 string keyPath = @"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\USBSTOR";
-                object originalValue = Registry.GetValue(keyPath, "Start", null);
-                if (originalValue != null)
-                {
-                    Registry.SetValue(keyPath, "Start", originalValue, RegistryValueKind.DWord);
-                }
+                Registry.SetValue(keyPath, "Start", 3, RegistryValueKind.DWord);
             }
             catch (UnauthorizedAccessException ex)
             {
@@ -135,11 +138,12 @@ namespace UsbDeviceAccess
             }
         }
 
+        // Method to disable USB storage devices
         public static void DisableUsbStorageDevices()
         {
             try
             {
-                // Modify the registry key value to disable USB storage devices (set to 4)
+                // Set the registry key value to disable USB storage devices (set to 4)
                 string keyPath = @"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\USBSTOR";
                 Registry.SetValue(keyPath, "Start", 4, RegistryValueKind.DWord);
             }
@@ -153,6 +157,9 @@ namespace UsbDeviceAccess
             }
         }
 
+
+
+        // Method to refresh the Device Manager
         private static void RefreshDeviceManager()
         {
             try
@@ -185,51 +192,62 @@ namespace UsbDeviceAccess
         }
 
         private static void TriggerUsbControllerRescan(string usbDeviceId)
-{
-    try
-    {
-        ManagementObjectSearcher searcher = new ManagementObjectSearcher("root\\CIMV2",
-            $"SELECT * FROM Win32_PnPEntity WHERE DeviceID = '{usbDeviceId}'");
-
-        foreach (ManagementObject queryObj in searcher.Get())
         {
-            string deviceInstancePath = queryObj["PNPDeviceID"].ToString();
-            bool rebootRequired;
-            bool result = UpdateDriverForPlugAndPlayDevices(IntPtr.Zero, deviceInstancePath, null, 0x00000001, out rebootRequired);
+            try
+            {
+                ManagementObjectSearcher searcher = new ManagementObjectSearcher("root\\CIMV2", $"SELECT * FROM Win32_PnPEntity WHERE DeviceID LIKE '%{usbDeviceId}%'");
 
-            if (result)
-            {
-                Console.WriteLine("USB controller rescan successful.");
+                foreach (ManagementObject queryObj in searcher.Get())
+                {
+                    SP_DEVINFO_DATA devInfoData = new SP_DEVINFO_DATA();
+                    devInfoData.cbSize = (uint)Marshal.SizeOf(devInfoData);
+
+                    // Get the device instance ID and pass it to the SetupDiCallClassInstaller function
+                    string deviceInstanceId = queryObj["DeviceID"].ToString();
+                    IntPtr ptr = Marshal.StringToHGlobalAuto(deviceInstanceId);
+                    bool result = SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, ptr, ref devInfoData);
+                    Marshal.FreeHGlobal(ptr);
+
+                    if (result)
+                    {
+                        Console.WriteLine("USB controller rescan successful.");
+                    }
+                    else
+                    {
+                        Console.WriteLine("Failed to trigger USB controller rescan.");
+                    }
+                }
             }
-            else
+            catch (Exception ex)
             {
-                Console.WriteLine("Failed to trigger USB controller rescan.");
+                Console.WriteLine("Error while triggering USB controller rescan:");
+                Console.WriteLine("Exception Type: " + ex.GetType().FullName);
+                Console.WriteLine("Message: " + ex.Message);
+                Console.WriteLine("Stack Trace: " + ex.StackTrace);
             }
         }
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine("Error while triggering USB controller rescan: " + ex.Message);
-    }
-}
 
-
-        // New method to handle USB device events
+        // Method to handle USB device events
         public static void HandleUsbDeviceEvent(string deviceId, bool isConnected)
         {
             try
             {
                 if (isConnected)
                 {
+                    // Always trigger USB controller rescan
+                    TriggerUsbControllerRescan(deviceId);
+
+                    // Check if the device is authorized in the database
                     bool deviceFound = CheckDeviceInDatabase(deviceId);
+
                     if (!deviceFound)
                     {
-                        DisableUsbStorageDevices(); // Corrected method name
+                        DisableUsbStorageDevices();
                         Console.WriteLine("USB storage devices disabled.");
                     }
                     else
                     {
-                        EnableUsbStorageDevices(); // Corrected method name
+                        EnableUsbStorageDevices();
                         Console.WriteLine("USB storage devices enabled.");
                         // Allow the USB device to access the PC (not implemented here)
                         Console.WriteLine("USB device allowed to access the PC.");
@@ -238,11 +256,8 @@ namespace UsbDeviceAccess
                 else
                 {
                     // Handle the case when the USB device is disconnected
-                    // For example, you may choose to enable USB storage devices again when disconnected
-                    // ...
-
-                    // Alternatively, you can decide not to do anything when the USB device is disconnected
-                    // ...
+                    EnableUsbStorageDevices(); // Disable USB storage devices when the authorized USB is disconnected
+                    Console.WriteLine("USB storage devices disabled.");
                 }
             }
             catch (Exception ex)
@@ -250,8 +265,9 @@ namespace UsbDeviceAccess
                 Console.WriteLine("Error while handling USB device event: " + ex.Message);
             }
         }
-    
 
+
+        // Method to register the USB event watcher
         public static void RegisterUsbEventWatcher()
         {
             try
@@ -269,6 +285,7 @@ namespace UsbDeviceAccess
             }
         }
 
+        // Method to handle the USB event arrival
         public static void UsbEventArrived(object sender, EventArrivedEventArgs e)
         {
             try
@@ -291,5 +308,53 @@ namespace UsbDeviceAccess
             }
         }
 
+        // Method to register for registry change events
+        public static void RegisterRegistryChangeEvents()
+        {
+            Microsoft.Win32.SystemEvents.UserPreferenceChanged += UsbStorageDevicesRegistryChanged;
+        }
+
+        // Method to handle registry change event for USB storage devices
+        private static void UsbStorageDevicesRegistryChanged(object sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
+        {
+            try
+            {
+                // Check if the changed user preference is related to the registry
+                if (e.Category == Microsoft.Win32.UserPreferenceCategory.General)
+                {
+                    // Check if the change is related to the "Start" registry value of the "USBSTOR" service
+                    string usbStorKeyPath = @"SYSTEM\CurrentControlSet\Services\USBSTOR";
+                    RegistryKey usbStorKey = Registry.LocalMachine.OpenSubKey(usbStorKeyPath);
+
+                    if (usbStorKey != null)
+                    {
+                        int startValue = (int)usbStorKey.GetValue("Start", -1);
+
+                        // Check if the value is changed to 3 (enabled) or 4 (disabled)
+                        if (startValue == 3)
+                        {
+                            // USB storage devices are enabled
+                            // You can add additional logic here if needed
+                            Console.WriteLine("USB storage devices enabled.");
+                        }
+                        else if (startValue == 4)
+                        {
+                            // USB storage devices are disabled
+                            // You can add additional logic here if needed
+                            Console.WriteLine("USB storage devices disabled.");
+                        }
+
+                        // If you want to trigger the USB controller rescan here, you can call the method like this:
+                        // TriggerUsbControllerRescan(GetUsbDeviceId());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error while handling USB storage devices registry change event: " + ex.Message);
+            }
+        }
+
+
+        }
     }
-}
