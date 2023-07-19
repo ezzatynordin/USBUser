@@ -19,18 +19,16 @@ namespace UsbDeviceAccess
             // Start the USB detection and access control logic
             StartUsbDetection();
 
-            // Register the USB event watcher to handle device connection and disconnection events
-            RegisterUsbEventWatcher();
-
             // Register for registry change events to automatically update Device Manager
             RegisterRegistryChangeEvents();
+
+            // Register the USB event watcher to handle device connection and disconnection events
+            RegisterUsbEventWatcher();
 
             // Keep the console application running to detect USB device events
             Console.WriteLine("Press any key to exit.");
             Console.ReadKey();
         }
-
-        #region USB Device Detection and Access Control
 
         // Method to start USB device detection and access control
         public static void StartUsbDetection()
@@ -40,10 +38,7 @@ namespace UsbDeviceAccess
 
             if (!string.IsNullOrEmpty(deviceId))
             {
-                // Check if the device is authorized in the database
                 bool deviceFound = CheckDeviceInDatabase(deviceId);
-
-                // Enable or disable USB storage devices based on authorization status
                 if (!deviceFound)
                 {
                     DisableUsbStorageDevices();
@@ -57,15 +52,12 @@ namespace UsbDeviceAccess
                     Console.WriteLine("USB device allowed to access the PC.");
                 }
 
-                // Refresh the Device Manager to apply changes
-                RefreshDeviceManager();
-
                 // Trigger the USB controller rescan with the provided device instance path
                 TriggerUsbControllerRescan(deviceId);
             }
         }
 
-        // Method to get the USB device ID
+        // Method to get the USB mass storage device ID and instance path
         public static string GetUsbDeviceId()
         {
             string deviceId = null;
@@ -73,24 +65,30 @@ namespace UsbDeviceAccess
             try
             {
                 // Implement USB device detection and retrieval here
-                // For example, you can use ManagementObjectSearcher to query Win32_PnPEntity class to get USB device IDs
-                ManagementObjectSearcher searcher = new ManagementObjectSearcher("root\\CIMV2", "SELECT * FROM Win32_PnPEntity");
+                // Use Win32_USBHub class to get USB mass storage devices
+                ManagementObjectSearcher searcher = new ManagementObjectSearcher("root\\CIMV2", "SELECT * FROM Win32_USBHub");
 
                 foreach (ManagementObject queryObj in searcher.Get())
                 {
-                    if (queryObj["Caption"] != null && queryObj["Caption"].ToString().Contains("USB") &&
-                        queryObj["DeviceID"] != null && queryObj["DeviceID"].ToString().Contains("USB"))
+                    if (queryObj["Caption"] != null && queryObj["DeviceID"] != null)
                     {
-                        deviceId = queryObj["DeviceID"].ToString();
-                        // Display the device ID to the console
-                        Console.WriteLine("USB device ID: " + deviceId);
-                        break; // For simplicity, just get the first USB device ID found
+                        string caption = queryObj["Caption"].ToString();
+                        string deviceID = queryObj["DeviceID"].ToString();
+
+                        // Check if the device is a USB mass storage device
+                        if (caption.Contains("USB Mass Storage"))
+                        {
+                            deviceId = deviceID;
+                            // Display the device ID to the console
+                            Console.WriteLine("USB mass storage device ID: " + deviceId);
+                            break; // For simplicity, just get the first USB mass storage device ID found
+                        }
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Error while retrieving USB device ID: " + ex.Message);
+                Console.WriteLine("Error while retrieving USB mass storage device ID: " + ex.Message);
             }
 
             return deviceId;
@@ -172,17 +170,7 @@ namespace UsbDeviceAccess
                 devInfoData.cbSize = (uint)Marshal.SizeOf(devInfoData);
 
                 // Call the SetupDiCallClassInstaller function with DIF_PROPERTYCHANGE to refresh the Device Manager
-                bool result = SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, IntPtr.Zero, ref devInfoData);
-
-                if (result)
-                {
-                    Console.WriteLine("Device Manager refreshed successfully.");
-                }
-                else
-                {
-                    int errorCode = Marshal.GetLastWin32Error();
-                    Console.WriteLine($"Failed to refresh Device Manager. Error code: {errorCode}");
-                }
+                SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, IntPtr.Zero, ref devInfoData);
             }
             catch (Exception ex)
             {
@@ -203,10 +191,6 @@ namespace UsbDeviceAccess
             public uint DevInst;
             public IntPtr Reserved;
         }
-
-        #endregion
-
-        #region USB Event Watcher and Handler
 
         // Method to trigger a USB controller rescan
         private static void TriggerUsbControllerRescan(string usbDeviceId)
@@ -296,7 +280,6 @@ namespace UsbDeviceAccess
                     // Check if the device is authorized in the database
                     bool deviceFound = CheckDeviceInDatabase(deviceId);
 
-                    // Enable or disable USB storage devices based on authorization status
                     if (!deviceFound)
                     {
                         DisableUsbStorageDevices();
@@ -322,10 +305,6 @@ namespace UsbDeviceAccess
                 Console.WriteLine("Error while handling USB device event: " + ex.Message);
             }
         }
-
-        #endregion
-
-        #region USB Storage Devices Registry Change
 
         // Method to register for registry change events
         public static void RegisterRegistryChangeEvents()
@@ -373,7 +352,5 @@ namespace UsbDeviceAccess
                 Console.WriteLine("Error while handling USB storage devices registry change event: " + ex.Message);
             }
         }
-
-        #endregion
     }
 }
